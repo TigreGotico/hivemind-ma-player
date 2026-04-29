@@ -39,11 +39,17 @@ SUPPORTED_FEATURES: set[ProviderFeature] = set()
 CONF_HOST = "host"
 CONF_PORT = "port"
 CONF_KEY = "access_key"
+CONF_PASSWORD = "password"
 CONF_SSL = "ssl"
 CONF_NAME = "player_name"
 
 DEFAULT_PORT = 5678
 DEFAULT_SSL = True
+
+# OCP PlayerState IntEnum values (from ovos_utils.ocp)
+_OCP_STOPPED = 0
+_OCP_PLAYING = 1
+_OCP_PAUSED = 2
 
 
 async def setup(
@@ -79,6 +85,13 @@ async def get_config_entries(
             label="Access key",
             required=True,
             description="The access key issued by HiveMind (hivemind-core add-client).",
+        ),
+        ConfigEntry(
+            key=CONF_PASSWORD,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Password",
+            required=False,
+            description="Optional password for the HiveMind client (if set during add-client).",
         ),
         ConfigEntry(
             key=CONF_SSL,
@@ -137,12 +150,26 @@ class HiveMindPlayer(Player):
     def _emit(self, msg_type: str, data: dict | None = None) -> None:
         """Send a Mycroft/OVOS message through the HiveMind tunnel."""
         msg = self.provider.Message(msg_type, data or {})
-        # HiveMessageBusClient.emit_mycroft() wraps the Message in a
-        # HiveMessage and sends it through the encrypted websocket.
         self.provider.bus.emit_mycroft(msg)
 
+    def _make_media_entry(self, url: str, media: PlayerMedia):
+        """Build an OCP MediaEntry for the given URL + MA PlayerMedia."""
+        from ovos_utils.ocp import MediaEntry, MediaType, PlaybackType, TrackState  # noqa: PLC0415
+        return MediaEntry(
+            uri=url,
+            title=getattr(media, "title", None) or url,
+            artist=getattr(media, "artist_name", None) or "",
+            length=int(getattr(media, "duration", None) or 0),
+            match_confidence=100,
+            skill_id="music_assistant",
+            status=TrackState.QUEUED_AUDIO,
+            media_type=MediaType.MUSIC,
+            playback=PlaybackType.AUDIO,
+            image=getattr(media, "image_url", None) or "",
+        )
+
     # ------------------------------------------------------------------
-    # Playback commands — identical message types to the OVOS provider
+    # Playback commands
     # ------------------------------------------------------------------
 
     async def play(self) -> None:
@@ -188,12 +215,8 @@ class HiveMindPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
-        await asyncio.to_thread(self._emit, "ovos.common_play.play", {
-            "tracks": [{"uri": url,
-                        "title": getattr(media, "title", None) or url,
-                        "artist": getattr(media, "artist_name", None) or "",
-                        "image": getattr(media, "image_url", None) or ""}],
-        })
+        entry = await asyncio.to_thread(self._make_media_entry, url, media)
+        await asyncio.to_thread(self._emit, "ovos.common_play.play", {"media": entry.as_dict})
         self._attr_current_media = media
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
@@ -202,36 +225,38 @@ class HiveMindPlayer(Player):
         self, announcement: PlayerMedia, volume_level: int | None = None
     ) -> None:
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, announcement)
-        await asyncio.to_thread(self._emit, "ovos.common_play.play", {
-            "tracks": [{"uri": url,
-                        "title": getattr(announcement, "title", None) or "Announcement",
-                        "artist": "",
-                        "image": ""}],
-        })
+        entry = await asyncio.to_thread(self._make_media_entry, url, announcement)
+        await asyncio.to_thread(self._emit, "ovos.common_play.play", {"media": entry.as_dict})
 
     async def poll(self) -> None:
         """Ask OCP for current playback state via HiveMind."""
         def _ask():
-            return self.provider.bus.wait_for_mycroft(
-                "ovos.common_play.status.response", timeout=2.0
+            # wait_for_response sends the message and registers the listener
+            # atomically, avoiding the race where a response arrives before
+            # wait_for_mycroft starts listening.
+            return self.provider.bus.wait_for_response(
+                self.provider.Message("ovos.common_play.status"),
+                reply_type="ovos.common_play.status.response",
+                timeout=3.0,
             )
 
-        self._emit("ovos.common_play.status")
         resp = await asyncio.to_thread(_ask)
         if resp:
-            state = resp.data.get("state")
-            if state == "playing":
+            # wait_for_response returns a HiveMessage; .payload is the inner Message
+            data = resp.payload.data if hasattr(resp, "payload") else resp.data
+            # state is PlayerState IntEnum: STOPPED=0, PLAYING=1, PAUSED=2
+            raw_state = data.get("state")
+            if raw_state == _OCP_PLAYING:
                 self._attr_playback_state = PlaybackState.PLAYING
-            elif state == "paused":
+            elif raw_state == _OCP_PAUSED:
                 self._attr_playback_state = PlaybackState.PAUSED
-            else:
+            elif raw_state == _OCP_STOPPED:
                 self._attr_playback_state = PlaybackState.IDLE
-            pos = resp.data.get("position")
-            if pos is not None:
-                self._attr_elapsed_time = int(pos)
-            volume = resp.data.get("volume")
-            if volume is not None:
-                self._attr_volume_level = int(volume * 100)
+            media = data.get("media")
+            if media and isinstance(media, dict):
+                pos = media.get("position")
+                if pos is not None:
+                    self._attr_elapsed_time = int(pos)
         self.update_state()
 
     async def on_unload(self) -> None:
@@ -251,8 +276,10 @@ class HiveMindPlayerProvider(PlayerProvider):
         try:
             from ovos_bus_client import Message  # noqa: PLC0415
             from hivemind_bus_client import HiveMessageBusClient  # noqa: PLC0415
+            from ovos_bus_client.util import FakeBus  # noqa: PLC0415
             self.Message = Message
             self._HiveMessageBusClient = HiveMessageBusClient
+            self._FakeBus = FakeBus
         except ImportError as err:
             from music_assistant_models.errors import ProviderUnavailableError
             raise ProviderUnavailableError(
@@ -261,23 +288,21 @@ class HiveMindPlayerProvider(PlayerProvider):
         host = self.config.get_value(CONF_HOST)
         port = int(self.config.get_value(CONF_PORT) or DEFAULT_PORT)
         key = self.config.get_value(CONF_KEY)
+        password = self.config.get_value(CONF_PASSWORD) or ""
         ssl = bool(self.config.get_value(CONF_SSL) if self.config.get_value(CONF_SSL) is not None
                    else DEFAULT_SSL)
 
-        url = self._HiveMessageBusClient.build_url(
-            key=key, host=host, port=port, ssl=ssl,
-            useragent="MusicAssistantHiveMindPlayer",
-        )
+        # Positional: key first, then keyword args for host/port/password
+        self.bus = self._HiveMessageBusClient(key, host=host, port=port,
+                                              password=password, ssl=ssl)
 
-        self.bus = self._HiveMessageBusClient(host=url, key=key)
-
-        # connect() is synchronous — run it in a thread
         connect_done = threading.Event()
         connect_error: list[Exception] = []
 
         def _connect():
             try:
-                self.bus.connect()
+                # connect() requires a FakeBus for the local side of the tunnel
+                self.bus.connect(self._FakeBus())
                 connect_done.set()
             except Exception as exc:
                 connect_error.append(exc)
@@ -298,25 +323,28 @@ class HiveMindPlayerProvider(PlayerProvider):
 
         self.logger.info("Connected to HiveMind at %s:%s", host, port)
 
-        # Subscribe to OCP state events tunnelled back from the remote OVOS instance
-        self.bus.on("ovos.common_play.track.state", self._on_track_state)
+        # ovos.common_play.player.state carries PlayerState (STOPPED/PLAYING/PAUSED)
+        self.bus.on("ovos.common_play.player.state", self._on_player_state)
         self.bus.on("ovos.common_play.media.state", self._on_media_state)
 
-    def _on_track_state(self, message) -> None:
-        state = message.data.get("state")
+    def _on_player_state(self, message) -> None:
+        """OCP high-level player state changed."""
+        raw_state = message.data.get("state")
         for player in self.players:
-            if state == "playing":
+            if raw_state == _OCP_PLAYING:
                 player._attr_playback_state = PlaybackState.PLAYING
-            elif state == "paused":
+            elif raw_state == _OCP_PAUSED:
                 player._attr_playback_state = PlaybackState.PAUSED
-            elif state in ("stopped", "end"):
+            elif raw_state == _OCP_STOPPED:
                 player._attr_playback_state = PlaybackState.IDLE
                 player._attr_current_media = None
             player.update_state()
 
     def _on_media_state(self, message) -> None:
+        """OCP media pipeline finished or errored."""
+        from ovos_utils.ocp import MediaState  # noqa: PLC0415
         state = message.data.get("state")
-        if state in ("end", "error"):
+        if state in (MediaState.END, MediaState.ERROR, 6, 7):
             for player in self.players:
                 player._attr_playback_state = PlaybackState.IDLE
                 player._attr_current_media = None
