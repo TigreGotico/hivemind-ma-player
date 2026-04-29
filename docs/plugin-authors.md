@@ -48,7 +48,7 @@ This allows MA to add multiple instances of this provider — one per remote OVO
 instance gets a unique `instance_id` from MA. Use it to namespace player IDs:
 
 ```python
-# hivemind_ma_player/__init__.py:354
+# hivemind_ma_player/__init__.py:418
 player_id = f"{self.instance_id}:hivemind"
 ```
 
@@ -58,7 +58,7 @@ Without the `instance_id` prefix, player IDs would collide across instances.
 
 ## The _emit helper
 
-`HiveMindPlayer._emit` (`hivemind_ma_player/__init__.py:150`) is a convenience wrapper around
+`HiveMindPlayer._emit` (`hivemind_ma_player/__init__.py:241`) is a convenience wrapper around
 `bus.emit_mycroft()`:
 
 ```python
@@ -182,7 +182,8 @@ async def test_poll_updates_state_via_hivemessage():
     player, provider = make_provider_and_player()
 
     fake_inner = MagicMock()
-    fake_inner.data = {"state": 1, "media": {"position": 30.0}}
+    # state and media match what OCP returns; position is in milliseconds
+    fake_inner.data = {"state": "playing", "media": {"position": 30000}}
 
     fake_hive_msg = MagicMock()
     fake_hive_msg.payload = fake_inner
@@ -192,13 +193,13 @@ async def test_poll_updates_state_via_hivemessage():
     await player.poll()
 
     assert player._attr_playback_state == PlaybackState.PLAYING
-    assert player._attr_elapsed_time == 30
+    assert player._attr_elapsed_time == 30   # plugin converts ms -> s (30000 // 1000)
 ```
 
 ### Testing the payload fallback
 
 The plugin handles both `HiveMessage` (`.payload`) and plain `Message` (`.data`) in `poll()`
-(`hivemind_ma_player/__init__.py:246`). Test both paths:
+(`hivemind_ma_player/__init__.py:322`). Test both paths:
 
 ```python
 @pytest.mark.asyncio
@@ -209,7 +210,7 @@ async def test_poll_fallback_to_resp_data():
     # Simulate a version that returns inner Message directly
     fake_response = Message(
         "ovos.common_play.status.response",
-        {"state": 2, "media": {"position": 10.0}}
+        {"state": "paused", "media": {"position": 10000}}   # position in ms
     )
     provider.bus.wait_for_response = MagicMock(return_value=fake_response)
 
@@ -217,7 +218,7 @@ async def test_poll_fallback_to_resp_data():
 
     from music_assistant_models.enums import PlaybackState
     assert player._attr_playback_state == PlaybackState.PAUSED
-    assert player._attr_elapsed_time == 10
+    assert player._attr_elapsed_time == 10   # 10000 ms // 1000 = 10 s
 ```
 
 ### Integration test against a real HiveMind node

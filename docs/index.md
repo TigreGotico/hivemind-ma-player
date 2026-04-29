@@ -44,8 +44,8 @@ client returns the inner message directly.
 
 | Class | Purpose | Source |
 |---|---|---|
-| `HiveMindPlayerProvider` | MA `PlayerProvider` — manages the HiveMind bus connection and player registration | `hivemind_ma_player/__init__.py:270` |
-| `HiveMindPlayer` | MA `Player` — translates MA commands to OCP messages via HiveMind | `hivemind_ma_player/__init__.py:118` |
+| `HiveMindPlayerProvider` | MA `PlayerProvider` — manages the HiveMind bus connection and player registration | `hivemind_ma_player/__init__.py:339` |
+| `HiveMindPlayer` | MA `Player` — translates MA commands to OCP messages via HiveMind | `hivemind_ma_player/__init__.py:213` |
 
 ## Contents
 

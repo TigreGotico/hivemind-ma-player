@@ -162,13 +162,14 @@ This is why `_on_player_state` and `_on_media_state` handlers look identical to 
 
 ### wait_for_response and the payload access pattern
 
-`poll()` (`hivemind_ma_player/__init__.py:231`) uses `bus.wait_for_response(...)`. Unlike
+`poll()` (`hivemind_ma_player/__init__.py:306`) uses `bus.wait_for_response(...)`. Unlike
 event-handler registration, `wait_for_response` returns the `HiveMessage` itself (not the inner
 `Message`). The inner `Message` is accessed via `resp.payload`:
 
 ```python
-# hivemind_ma_player/__init__.py:246
-data = resp.payload.data if hasattr(resp, "payload") else resp.data
+# hivemind_ma_player/__init__.py:322-323
+inner = resp.payload if hasattr(resp, "payload") else resp
+raw = inner.data if hasattr(inner, "data") else {}
 ```
 
 The `hasattr` fallback handles the case where a future version of `hivemind-bus-client`
@@ -221,7 +222,7 @@ handle_async_init (asyncio loop)
     └── await asyncio.to_thread(connect_done.wait, 15)
 ```
 
-`hivemind_ma_player/__init__.py:299-322`
+`hivemind_ma_player/__init__.py:368-390`
 
 The `connect_done.wait(15)` is wrapped in `asyncio.to_thread` to avoid blocking the event loop
 during the 15-second window. If `connect_error` is non-empty, or if `connect_done` was not set
@@ -251,23 +252,23 @@ All messages are standard OVOS `Message` objects sent via `bus.emit_mycroft()`:
 
 | Message type | Payload | Triggered by | Source |
 |---|---|---|---|
-| `ovos.common_play.resume` | — | `HiveMindPlayer.play` | `:175` |
-| `ovos.common_play.pause` | — | `HiveMindPlayer.pause` | `:180` |
-| `ovos.common_play.stop` | — | `HiveMindPlayer.stop`, `HiveMindPlayer.power(False)` | `:185` |
-| `ovos.common_play.set_track_position` | `{"position": float}` (seconds) | `HiveMindPlayer.seek` | `:192` |
-| `mycroft.volume.set` | `{"percent": float}` (0.0-1.0) | `HiveMindPlayer.volume_set` | `:196` |
-| `mycroft.volume.mute` | — | `HiveMindPlayer.volume_mute(True)` | `:203` |
-| `mycroft.volume.unmute` | — | `HiveMindPlayer.volume_mute(False)` | `:204` |
-| `ovos.common_play.play` | `{"media": MediaEntry dict}` | `HiveMindPlayer.play_media`, `HiveMindPlayer.play_announcement` | `:219`, `:229` |
-| `ovos.common_play.status` | — | `HiveMindPlayer.poll` | `:237` |
+| `ovos.common_play.resume` | `{}` | `HiveMindPlayer.play` | `:247` |
+| `ovos.common_play.pause` | `{}` | `HiveMindPlayer.pause` | `:252` |
+| `ovos.common_play.stop` | `{}` | `HiveMindPlayer.stop`, `HiveMindPlayer.power(False)` | `:257` |
+| `ovos.common_play.set_track_position` | `{"position": int}` (milliseconds) | `HiveMindPlayer.seek` | `:264` |
+| `mycroft.volume.set` | `{"percent": float}` (0.0-1.0) | `HiveMindPlayer.volume_set` | `:271` |
+| `mycroft.volume.mute` | `{}` | `HiveMindPlayer.volume_mute(True)` | `:278` |
+| `mycroft.volume.unmute` | `{}` | `HiveMindPlayer.volume_mute(False)` | `:278` |
+| `ovos.common_play.play` | see payload schema | `HiveMindPlayer.play_media`, `HiveMindPlayer.play_announcement` | `:293`, `:303` |
+| `ovos.common_play.status` | `{}` | `HiveMindPlayer.poll` | `:312` |
 
 ### Messages received by MA (remote OVOS to MA via HiveMind)
 
 | Message type | Payload | Handler | Source |
 |---|---|---|---|
-| `ovos.common_play.player.state` | `{"state": int}` | `HiveMindPlayerProvider._on_player_state` | `:330` |
-| `ovos.common_play.media.state` | `{"state": int}` | `HiveMindPlayerProvider._on_media_state` | `:343` |
-| `ovos.common_play.status.response` | `{"state": int, "media": {"position": float, ...}}` | `HiveMindPlayer.poll` via `wait_for_response` | `:243` |
+| `ovos.common_play.player.state` | `{"state": <PlayerState>}` | `HiveMindPlayerProvider._on_player_state` | `:399` |
+| `ovos.common_play.media.state` | `{"state": <OcpMediaState>}` | `HiveMindPlayerProvider._on_media_state` | `:409` |
+| `ovos.common_play.status.response` | `{"state": <PlayerState>, "media": {...}}` | `HiveMindPlayer.poll` via `wait_for_response` | `:312` |
 
 All line numbers refer to `hivemind_ma_player/__init__.py`.
 
@@ -277,29 +278,28 @@ For full payload schemas and enum values, see [ocp-protocol.md](ocp-protocol.md)
 
 ## State machine
 
-### PlayerState IntEnum
+### PlayerState
 
-Identical to `ovos-ma-player`:
-
-| Integer | OCP name | MA PlaybackState |
-|---|---|---|
-| `0` | `STOPPED` | `PlaybackState.IDLE` |
-| `1` | `PLAYING` | `PlaybackState.PLAYING` |
-| `2` | `PAUSED` | `PlaybackState.PAUSED` |
+State parsing is identical to `ovos-ma-player`. The module-level `_parse_player_state`
+function (`hivemind_ma_player/__init__.py:147`) validates the payload using
+`OvosCommonPlayPlayerStateData` from `ovos_pydantic_models.skills.ocp` and maps
+`PlayerState.PLAYING` -> `PlaybackState.PLAYING`, `PlayerState.PAUSED` ->
+`PlaybackState.PAUSED`, and everything else -> `PlaybackState.IDLE`.
 
 ### MediaState and end-of-track detection
 
-`_on_media_state` (`hivemind_ma_player/__init__.py:343`) acts on values `6` (END) and `7`
-(ERROR), resetting the player to IDLE and clearing `current_media`. Identical logic to
-`ovos-ma-player`.
+`_on_media_state` (`hivemind_ma_player/__init__.py:409`) calls `_parse_media_state_end`
+(`hivemind_ma_player/__init__.py:164`), which validates using `OvosCommonPlayMediaStateData`
+and returns `True` only for `OcpMediaState.END_OF_MEDIA` and `OcpMediaState.INVALID_MEDIA`.
+When `True`, the player is reset to IDLE and `current_media` is cleared.
 
 ---
 
 ## MediaEntry fields
 
-`HiveMindPlayer._make_media_entry` — `hivemind_ma_player/__init__.py:155`
+`_make_ocp_media_entry(url, media)` — `hivemind_ma_player/__init__.py:117`
 
-Identical field set to `ovos-ma-player`. See
+Identical to `ovos-ma-player`. See
 [ovos-ma-player/docs/architecture.md — MediaEntry fields](../../ovos-ma-player/docs/architecture.md#mediaentry-fields)
 for the full table.
 
@@ -309,6 +309,17 @@ not just from the MA server. If OVOS is on a different subnet or behind NAT, con
 external/public URL in its network settings so that the resolved stream URL is accessible from
 the remote device.
 
+**Note on payload structure:** `play_media` and `play_announcement` wrap the `MediaEntry` dict
+in a `OvosCommonPlayPlayData` payload via `_make_play_payload` (`hivemind_ma_player/__init__.py:137`):
+
+```json
+{
+  "media": { ... },
+  "disambiguation": [],
+  "playlist": [{ ... }]
+}
+```
+
 ---
 
 ## Security model
@@ -316,7 +327,7 @@ the remote device.
 HiveMind authentication operates at the WebSocket handshake level:
 
 - The access key is the first positional argument to `HiveMessageBusClient`
-  (`hivemind_ma_player/__init__.py:296`). It is transmitted in the initial handshake message
+  (`hivemind_ma_player/__init__.py:365`). It is transmitted in the initial handshake message
   sent immediately after the WebSocket connection is established.
 - The optional password adds a second factor. HiveMind uses it to derive an encryption key for
   the message payload (in addition to TLS).
@@ -336,6 +347,6 @@ same reasons as `ovos-ma-player`. See
 [ovos-ma-player/docs/architecture.md — ProviderFeature vs PlayerFeature](../../ovos-ma-player/docs/architecture.md#providerfeature-vs-playerfeature).
 
 `HiveMindPlayer._attr_supported_features` declares the same set of `PlayerFeature` flags as
-`OVOSPlayer` (`hivemind_ma_player/__init__.py:124-132`):
+`OVOSPlayer` (`hivemind_ma_player/__init__.py:219-227`):
 
 `PLAY_MEDIA`, `POWER`, `PAUSE`, `VOLUME_SET`, `VOLUME_MUTE`, `SEEK`, `PLAY_ANNOUNCEMENT`
