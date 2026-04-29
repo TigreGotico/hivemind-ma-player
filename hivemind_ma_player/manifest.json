@@ -1,0 +1,11 @@
+{
+  "type": "player",
+  "domain": "hivemind_player",
+  "name": "HiveMind (remote OVOS)",
+  "description": "Drive a remote OVOS / OCP instance from Music Assistant via an encrypted HiveMind connection.",
+  "codeowners": ["@TigreGotico"],
+  "stage": "beta",
+  "requirements": ["ovos-bus-client", "hivemind-bus-client"],
+  "documentation": "https://github.com/TigreGotico/hivemind-ma-player",
+  "multi_instance": true
+}

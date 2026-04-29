@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hivemind-ma-player"
+version = "0.1.0"
+description = "HiveMind remote OVOS player provider for Music Assistant"
+requires-python = ">=3.11"
+dependencies = ["music-assistant-plugin-manager", "ovos-bus-client", "hivemind-bus-client"]
+
+[project.entry-points."music_assistant.provider"]
+hivemind_player = "hivemind_ma_player"
+
+[tool.setuptools.packages.find]
+include = ["hivemind_ma_player*"]
+
+[tool.setuptools.package-data]
+hivemind_ma_player = ["manifest.json"]
