@@ -1,11 +1,11 @@
 # Plugin Authors Guide — hivemind-ma-player
 
 This document is for developers who want to fork, extend, or use this plugin as a template for
-a Music Assistant PlayerProvider that talks to a remote OVOS device via HiveMind.
+a Music Assistant PlayerProvider that talks to a remote OVOS device through HiveMind.
 
 **Read [ovos-ma-player/docs/plugin-authors.md](../../ovos-ma-player/docs/plugin-authors.md)
-first.** Everything there applies here. This document only covers the differences introduced by
-the HiveMind transport.
+first.** Everything there applies here. This document only covers the differences the
+HiveMind transport introduces.
 
 ---
 
@@ -44,7 +44,7 @@ The critical manifest field that differs:
 "multi_instance": true
 ```
 
-This allows MA to add multiple instances of this provider — one per remote OVOS device. Each
+This lets MA add multiple instances of this provider, one per remote OVOS device. Each
 instance gets a unique `instance_id` from MA. Use it to namespace player IDs:
 
 ```python
@@ -67,7 +67,7 @@ def _emit(self, msg_type: str, data: dict | None = None) -> None:
     self.provider.bus.emit_mycroft(msg)
 ```
 
-All playback command methods call `_emit` via `asyncio.to_thread`:
+All playback command methods call `_emit` through `asyncio.to_thread`:
 
 ```python
 async def pause(self) -> None:
@@ -77,14 +77,14 @@ async def pause(self) -> None:
 ```
 
 In `ovos-ma-player`, the equivalent line calls `bus.emit(Message(...))` directly. The pattern
-is otherwise identical. When forking this plugin, replace `_emit` calls with whatever your
-transport requires.
+is otherwise identical. When you fork this plugin, replace `_emit` calls with whatever your
+transport needs.
 
 ---
 
 ## How to add new PlayerFeature flags
 
-Add to `HiveMindPlayer._attr_supported_features` and implement the async method using
+Add the flag to `HiveMindPlayer._attr_supported_features` and implement the async method with
 `self._emit`:
 
 ```python
@@ -99,9 +99,9 @@ async def previous_track(self) -> None:
     await asyncio.to_thread(self._emit, "ovos.common_play.prev")
 ```
 
-Verify that the remote OCP version handles `ovos.common_play.next` and
-`ovos.common_play.prev`. Use `hivemind-client terminal` to observe whether the messages arrive
-on the remote bus and trigger the expected OCP behaviour.
+Check that the remote OCP version handles `ovos.common_play.next` and
+`ovos.common_play.prev`. Use `hivemind-client terminal` to see whether the messages arrive on
+the remote bus and trigger the expected OCP behavior.
 
 ---
 
@@ -114,11 +114,11 @@ Subscribe in `handle_async_init` after `connect_done` is set:
 self.bus.on("ovos.some.new.event", self._on_some_event)
 ```
 
-`bus.on()` registers on the internal `FakeBus`. Events tunnelled from the remote OVOS node
-are re-emitted on the `FakeBus`, so handlers receive a plain `Message` (not a `HiveMessage`),
+`bus.on()` registers on the internal `FakeBus`. Events tunnelled from the remote OVOS node are
+re-emitted on the `FakeBus`, so handlers receive a plain `Message` (not a `HiveMessage`),
 identical to how they arrive in `ovos-ma-player`.
 
-Handler rules are the same: no `await` in handlers; use
+Handler rules are the same: do not `await` in handlers. Use
 `asyncio.run_coroutine_threadsafe(coro, self.mass.loop)` if you need async work from a handler.
 
 ---
@@ -159,8 +159,8 @@ async def test_pause_calls_emit_mycroft():
 
 ### Asserting _emit is used (not bus.emit)
 
-The key difference from `ovos-ma-player` tests is that you assert `emit_mycroft` was called,
-not `emit`:
+The key difference from `ovos-ma-player` tests: assert that `emit_mycroft` was called, not
+`emit`:
 
 ```python
 # CORRECT for hivemind-ma-player:
@@ -172,8 +172,8 @@ provider.bus.emit.assert_called_once()
 
 ### Faking poll responses
 
-`wait_for_response` on `HiveMessageBusClient` returns a `HiveMessage`. The plugin accesses
-`resp.payload.data`. Fake it:
+`wait_for_response` on `HiveMessageBusClient` returns a `HiveMessage`. The plugin reads
+`resp.payload.data`. Fake it like this:
 
 ```python
 @pytest.mark.asyncio
@@ -226,23 +226,23 @@ async def test_poll_fallback_to_resp_data():
 1. Run OVOS + HiveMind on a test device or VM.
 2. Generate a key: `hivemind-core add-client --name test`.
 3. Install the plugin in a MA dev instance and add a provider instance with the key.
-4. Use `hivemind-client terminal` to observe traffic through the tunnel.
+4. Use `hivemind-client terminal` to watch traffic through the tunnel.
 5. Use `ovos-bus-client monitor` on the remote to confirm OCP messages arrive and are handled.
 6. Check that state events (`ovos.common_play.player.state`) flow back through the tunnel and
    update the MA player state.
 
-### Testing multi-instance behaviour
+### Testing multi-instance behavior
 
 Add two provider instances in MA pointing at two different HiveMind nodes (or two different
 keys on the same node). Each generates a distinct `instance_id`. Verify:
 
 - Each player appears independently in the MA player list with its configured `player_name`.
-- Commands sent to one player (e.g. pause) do not affect the other.
+- Commands sent to one player (for example, pause) do not affect the other.
 - Both players receive state updates independently when their respective OCP instances emit
   events.
 
-To test this without two physical devices, run two separate HiveMind core instances on different
-ports on the same machine, each with a different OVOS bus connection.
+To test this without two physical devices, run two separate HiveMind core instances on
+different ports on the same machine, each with a different OVOS bus connection.
 
 ---
 
@@ -268,3 +268,6 @@ my_hivemind_player = "my_hivemind_ma_player"
   "requirements": ["ovos-bus-client", "hivemind-bus-client"]
 }
 ```
+
+---
+[← Architecture](architecture.md) · [Home](../README.md) · [OCP Protocol →](ocp-protocol.md)
