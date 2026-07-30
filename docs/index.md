@@ -1,13 +1,13 @@
 # hivemind-ma-player
 
-Music Assistant PlayerProvider that drives a remote OVOS / OCP instance via a HiveMind
+Music Assistant PlayerProvider that drives a remote OVOS / OCP instance through a HiveMind
 encrypted websocket connection.
 
 ## Overview
 
-HiveMind is a secure overlay on the OVOS messagebus that wraps each Mycroft/OVOS bus message
-in an authenticated envelope and transmits it over a `wss://` connection. This package bridges
-Music Assistant (the media server) with one or more remote OVOS devices running HiveMind.
+HiveMind is a secure overlay on the OVOS messagebus. It wraps each Mycroft/OVOS bus message in
+an authenticated envelope and sends it over a `wss://` connection. This package bridges Music
+Assistant (the media server) with one or more remote OVOS devices running HiveMind.
 
 Each provider instance in MA maps to exactly one remote OVOS device. Because `manifest.json`
 sets `multi_instance: true`, you can add as many instances as you have remote devices.
@@ -29,8 +29,8 @@ machine, the same `MediaEntry` serialization. The difference is entirely in the 
 | Poll response type | OVOS `Message` | `HiveMessage` with inner `Message` at `.payload` |
 | Connection timeout | 10 seconds | 15 seconds |
 
-If you are reading the source of one, you understand the other. The only non-trivial difference
-is how `poll()` unpacks the response:
+If you read the source of one, you understand the other. The only non-trivial difference is
+how `poll()` unpacks the response:
 
 ```python
 # hivemind_ma_player/__init__.py:246

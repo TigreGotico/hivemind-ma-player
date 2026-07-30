@@ -20,15 +20,15 @@ MA host                        Remote OVOS device
 ```
 
 HiveMind core must run on each remote OVOS device. MA (with this plugin) connects out to
-HiveMind — not the other way around.
+HiveMind, not the other way around.
 
 ---
 
 ## Remote device setup
 
-This section covers setting up a remote device from scratch so that MA can drive it as a
-player. The remote device does not need a full OVOS installation; `hivemind-media-player`
-provides a standalone audio stack. See
+This section covers setting up a remote device from scratch so MA can drive it as a player.
+The remote device does not need a full OVOS installation. `hivemind-media-player` provides a
+standalone audio stack. See
 [https://github.com/JarbasHiveMind/hivemind-media-player](https://github.com/JarbasHiveMind/hivemind-media-player)
 for the upstream project.
 
@@ -57,9 +57,9 @@ Edit `~/.config/hivemind-core/server.json` (create it if it does not exist):
 }
 ```
 
-This tells `hivemind-core` to load `HiveMindPlayerProtocol`, which instantiates
-`ovos-audio`'s `PlaybackService` on an internal `FakeBus` and forwards all incoming OCP
-messages to it. `hivemind_player_protocol/__init__.py:15`
+This tells `hivemind-core` to load `HiveMindPlayerProtocol`, which starts `ovos-audio`'s
+`PlaybackService` on an internal `FakeBus` and forwards all incoming OCP messages to it.
+`hivemind_player_protocol/__init__.py:15`
 
 ### Step 3 — Configure ovos-audio
 
@@ -102,8 +102,8 @@ Edit `~/.config/mycroft/mycroft.conf`:
 }
 ```
 
-OCP is the primary backend; mpv or VLC handles the actual audio output. Both must be
-installed on the system (`apt install mpv vlc` or equivalent).
+OCP is the primary backend. mpv or VLC handles the actual audio output. Both must be installed
+on the system (`apt install mpv vlc` or the equivalent for your distribution).
 
 ### Step 4 — Create a client and grant permissions
 
@@ -183,22 +183,22 @@ hivemind-core listen --port 5678
 
 ### Step 6 — Configure MA
 
-In MA go to **Settings > Players > Add Provider > HiveMind (remote OVOS)** and enter:
+In MA, go to **Settings > Players > Add Provider > HiveMind (remote OVOS)** and enter:
 
 - **Host**: IP or hostname of the remote device
 - **Port**: `5678`
 - **Access Key**: the value from `add-client` output
 - **Password**: the value from `add-client` output (leave blank if you did not generate one)
 - **SSL**: enabled by default; disable only for local testing
-- **Player name**: a unique friendly name (e.g. "Living Room")
+- **Player name**: a unique friendly name (for example "Living Room")
 
 ### Docker alternative
 
-`hivemind-media-player` ships a `Dockerfile` (based on `debian:trixie-slim`) that installs
-all system-level audio dependencies (VLC, mpv, PipeWire, ALSA, mpg123, sox) alongside
-`hivemind-core` and the agent plugin in a Python venv. A `docker-compose.yml` is provided
-for a single-command deployment. Refer to the upstream repository for compose file usage and
-volume mount paths for the config files.
+`hivemind-media-player` ships a `Dockerfile` (based on `debian:trixie-slim`) that installs all
+system-level audio dependencies (VLC, mpv, PipeWire, ALSA, mpg123, sox) alongside
+`hivemind-core` and the agent plugin in a Python venv. It also provides a `docker-compose.yml`
+for a single-command deployment. See the upstream repository for compose file usage and volume
+mount paths for the config files.
 
 ---
 
@@ -214,7 +214,7 @@ volume mount paths for the config files.
 pip install hivemind-core
 ```
 
-Or install into the same venv as OVOS if you manage OVOS in a venv.
+Or install it into the same venv as OVOS if you manage OVOS in a venv.
 
 ### Generate an access key for MA
 
@@ -237,7 +237,7 @@ If you want a password:
 hivemind-core add-client --name "music-assistant" --password "choose-a-strong-password"
 ```
 
-Copy and store the access key securely. You will enter it in the MA provider config.
+Copy and store the access key securely. You enter it in the MA provider config.
 
 ### Start HiveMind
 
@@ -245,8 +245,8 @@ Copy and store the access key securely. You will enter it in the MA provider con
 hivemind-core listen --port 5678
 ```
 
-HiveMind connects to the local OVOS messagebus (`ws://localhost:8181/core`) by default. Ensure
-OVOS is running before starting HiveMind.
+HiveMind connects to the local OVOS messagebus (`ws://localhost:8181/core`) by default. Make
+sure OVOS is running before you start HiveMind.
 
 ---
 
@@ -271,7 +271,7 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
-Adjust `User` and `ExecStart` path to match your installation. Then:
+Adjust `User` and `ExecStart` path to match your installation. Then run:
 
 ```bash
 sudo systemctl daemon-reload
@@ -286,7 +286,7 @@ sudo systemctl status hivemind
 journalctl -u hivemind -f
 ```
 
-You should see a line like:
+You should see a line like this:
 
 ```
 INFO  hivemind_core Listening on 0.0.0.0:5678
@@ -296,7 +296,7 @@ INFO  hivemind_core Listening on 0.0.0.0:5678
 
 ## TLS / SSL configuration
 
-HiveMind supports TLS. The `ssl=True` default in this plugin means MA will attempt a `wss://`
+HiveMind supports TLS. The `ssl=True` default in this plugin means MA attempts a `wss://`
 connection.
 
 ### Self-signed certificate (development)
@@ -322,8 +322,8 @@ hivemind-core listen --port 5678 \
   --ssl-key  /etc/letsencrypt/live/myrpi.example.com/privkey.pem
 ```
 
-A Let's Encrypt certificate is trusted by all standard OS certificate stores, so MA will accept
-it without any additional configuration.
+All standard OS certificate stores trust a Let's Encrypt certificate, so MA accepts it without
+any added configuration.
 
 ### Self-signed certificate (production workaround)
 
@@ -335,8 +335,8 @@ sudo cp hivemind-ca.crt /usr/local/share/ca-certificates/hivemind.crt
 sudo update-ca-certificates
 ```
 
-Alternatively, set `ssl: false` in the MA provider config to disable TLS entirely. This is
-only appropriate on a fully isolated local network.
+Alternatively, set `ssl: false` in the MA provider config to disable TLS entirely. Do this only
+on a fully isolated local network.
 
 ---
 
@@ -348,10 +348,10 @@ Each remote OVOS device needs:
 3. At least one access key generated for MA.
 
 In MA, add one `hivemind-ma-player` provider instance per remote device:
-- Set a unique `player_name` for each (e.g. "Living Room", "Bedroom", "Office").
+- Set a unique `player_name` for each (for example, "Living Room", "Bedroom", "Office").
 - Each instance gets a unique `instance_id` from MA, so player IDs will not collide.
 
-There is no limit to the number of instances (beyond MA's general provider limits).
+There is no limit to the number of instances beyond MA's general provider limits.
 
 ### Key management
 
@@ -365,8 +365,8 @@ Revoke a key:
 hivemind-core delete-client --name "music-assistant"
 ```
 
-After revoking, the MA provider instance will fail to connect. Update the MA config with a new
-key or remove the provider instance.
+After you revoke a key, the MA provider instance fails to connect. Update the MA config with a
+new key, or remove the provider instance.
 
 ### Key rotation
 
@@ -383,11 +383,11 @@ Periodic key rotation is good security practice:
 
 | Connection | Protocol | Port | Direction | Auth |
 |---|---|---|---|---|
-| MA -> HiveMind | WebSocket (`wss://` or `ws://`) | 5678 (default) | MA initiates | Access key + optional password |
-| HiveMind -> OVOS | WebSocket (`ws://`) | 8181 | HiveMind initiates (local) | None |
-| OVOS -> MA streams | HTTP | MA stream port | OVOS initiates when playing | None |
+| MA -> HiveMind | WebSocket (`wss://` or `ws://`) | 5678 (default) | MA starts | Access key + optional password |
+| HiveMind -> OVOS | WebSocket (`ws://`) | 8181 | HiveMind starts (local) | None |
+| OVOS -> MA streams | HTTP | MA stream port | OVOS starts it when playing | None |
 
-The MA stream port must be reachable from the remote OVOS device. Configure MA's network
+The remote OVOS device must be able to reach the MA stream port. Configure MA's network
 settings to use an address reachable from the remote LAN or internet.
 
 Firewall rule on the remote device (using `ufw`):
@@ -397,7 +397,7 @@ Firewall rule on the remote device (using `ufw`):
 sudo ufw allow from MA_HOST_IP to any port 5678
 ```
 
-HiveMind does NOT need to initiate connections back to MA; all communication is client-initiated
+HiveMind does not need to start connections back to MA. MA always starts the connection
 from MA's side.
 
 ---
@@ -407,14 +407,15 @@ from MA's side.
 ### Access key strength
 
 `hivemind-core add-client` generates a cryptographically random access key. Do not replace it
-with a short or guessable value. If you need a human-readable name, use the `--name` parameter;
-the key itself should remain auto-generated.
+with a short or guessable value. If you need a human-readable name, use the `--name` parameter.
+The key itself should stay auto-generated.
 
 ### Password layer
 
-The optional `--password` adds a second factor. The password is used to derive an encryption
-key for the message payload. Without a password, the payload is only protected by TLS. With a
-password, even if TLS is broken or misconfigured, the payload is additionally encrypted.
+The optional `--password` adds a second factor. HiveMind uses the password to derive an
+encryption key for the message payload. Without a password, TLS alone protects the payload.
+With a password, the payload gets an added layer of encryption even if TLS is broken or
+misconfigured.
 
 Recommendation: use a password if the HiveMind port is exposed to untrusted networks.
 
@@ -433,10 +434,10 @@ sudo ufw deny 5678
 ### Key storage in MA
 
 MA stores `access_key` and `password` as `ConfigEntryType.SECURE_STRING`
-(`hivemind_ma_player/__init__.py:88`, `:95`). MA encrypts these at rest using its own key
-store. They are never written in plaintext to disk by MA.
+(`hivemind_ma_player/__init__.py:88`, `:95`). MA encrypts these values at rest with its own key
+store. MA never writes them in plaintext to disk.
 
-Do not share MA's config backup with untrusted parties, as it contains the encrypted keys.
+Do not share MA's config backup with untrusted parties. It contains the encrypted keys.
 
 ---
 
@@ -452,7 +453,7 @@ journalctl -u hivemind -f
 hivemind-core listen --port 5678 --verbose
 ```
 
-A successful MA connection looks like:
+A successful MA connection looks like this:
 
 ```
 INFO  hivemind_core New client connected: music-assistant (key: abc123...)
@@ -522,3 +523,6 @@ ERROR hivemind_ma_player HiveMind connection failed: <error details>
 
 HiveMind core and `hivemind-bus-client` must be version-compatible. If you upgrade one, upgrade
 the other. Check the HiveMind-core release notes for compatibility information.
+
+---
+[← OCP Protocol](ocp-protocol.md) · [Home](../README.md)

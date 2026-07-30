@@ -20,9 +20,8 @@
 `HiveMindPlayerProvider` holds a `HiveMessageBusClient` connected to the remote device.
 `HiveMindPlayer._emit` wraps each OVOS `Message` in a `HiveMessage` envelope and calls
 `bus.emit_mycroft()` to send it through the encrypted tunnel. State events that arrive from
-the remote device are received on an internal `FakeBus` and dispatched to
-`_on_player_state` / `_on_media_state`, which update MA's player state.
-`hivemind_ma_player/__init__.py:241`
+the remote device reach an internal `FakeBus` and are dispatched to `_on_player_state` /
+`_on_media_state`, which update MA's player state. `hivemind_ma_player/__init__.py:241`
 
 **hivemind-core (on the remote device)**
 
@@ -32,26 +31,25 @@ access key and optional password, maintains the TLS WebSocket connection, and ro
 
 **hivemind-player-agent (`HiveMindPlayerProtocol`)**
 
-An `AgentProtocol` implementation loaded by `hivemind-core` via the `server.json`
+An `AgentProtocol` implementation loaded by `hivemind-core` through the `server.json`
 `agent_protocol` config key. On startup it creates an internal `FakeBus` and instantiates
-`ovos-audio`'s `PlaybackService` connected to that bus.
-`hivemind_player_protocol/__init__.py:15`
+`ovos-audio`'s `PlaybackService` connected to that bus. `hivemind_player_protocol/__init__.py:15`
 
-When `hivemind-core` receives an inbound `HiveMessage` from MA, it calls into the agent,
-which unwraps the inner OVOS `Message` and emits it on the `FakeBus`. `PlaybackService` (OCP)
-receives the message on its bus and acts on it — starting playback, pausing, seeking, etc.
+When `hivemind-core` receives an inbound `HiveMessage` from MA, it calls into the agent, which
+unwraps the inner OVOS `Message` and emits it on the `FakeBus`. `PlaybackService` (OCP)
+receives the message on its bus and acts on it — starting playback, pausing, seeking, and so
+on.
 
-Responses and state events emitted by `PlaybackService` on the `FakeBus` are forwarded back
-to the connected client (MA) by `handle_internal_mycroft`, which wraps them in a
-`HiveMessage(HiveMessageType.BUS)` and calls `client.send()`.
-`hivemind_player_protocol/__init__.py:83`
+`handle_internal_mycroft` forwards responses and state events that `PlaybackService` emits on
+the `FakeBus` back to the connected client (MA). It wraps them in a
+`HiveMessage(HiveMessageType.BUS)` and calls `client.send()`. `hivemind_player_protocol/__init__.py:83`
 
 **ovos-audio + OCP**
 
-`PlaybackService` is the audio subsystem from `ovos-audio`. It manages track queuing,
-playback state, and delegates actual audio output to whichever backend plugin is active
-(mpv, VLC, etc.). It emits `ovos.common_play.player.state` and `ovos.common_play.media.state`
-on the bus as playback progresses; these are tunnelled back to MA.
+`PlaybackService` is the audio subsystem from `ovos-audio`. It manages track queuing, playback
+state, and delegates actual audio output to whichever backend plugin is active (mpv, VLC, and
+so on). It emits `ovos.common_play.player.state` and `ovos.common_play.media.state` on the bus
+as playback progresses. These events are tunnelled back to MA.
 
 ---
 
@@ -78,7 +76,7 @@ Module-level helpers (identical to ovos-ma-player):
 
 `HiveMindPlayerProvider` holds the single `HiveMessageBusClient` instance and exposes it (and
 the `Message` class from `ovos_bus_client`) as instance attributes. `HiveMindPlayer` never
-imports from either bus package directly; it always goes through `self.provider.bus` and
+imports from either bus package directly. It always goes through `self.provider.bus` and
 `self.provider.Message`.
 
 ---
@@ -112,7 +110,7 @@ there applies here. The sections below focus on what differs in the HiveMind tra
 
 ## The HiveMessage envelope
 
-When `HiveMindPlayer._emit` is called (`hivemind_ma_player/__init__.py:241`):
+When code calls `HiveMindPlayer._emit` (`hivemind_ma_player/__init__.py:241`):
 
 ```python
 def _emit(self, msg_type: str, data: dict | None = None) -> None:
@@ -135,8 +133,8 @@ on the wire:
 }
 ```
 
-HiveMind transmits this over the TLS WebSocket. The remote HiveMind core receives it, unwraps
-the `payload`, and emits it on the remote OVOS messagebus:
+HiveMind sends this over the TLS WebSocket. The remote HiveMind core receives it, unwraps the
+`payload`, and emits it on the remote OVOS messagebus:
 
 ```
 MA -> HiveMessage(type=BUS, payload=Message("ovos.common_play.play", {...}))
@@ -158,13 +156,13 @@ Remote OCP emits Message("ovos.common_play.player.state", {"state": 1})
 ```
 
 This is why `_on_player_state` and `_on_media_state` handlers look identical to those in
-`ovos-ma-player` — they receive a plain `Message` object.
+`ovos-ma-player`. They receive a plain `Message` object.
 
 ### wait_for_response and the payload access pattern
 
 `poll()` (`hivemind_ma_player/__init__.py:306`) uses `bus.wait_for_response(...)`. Unlike
-event-handler registration, `wait_for_response` returns the `HiveMessage` itself (not the inner
-`Message`). The inner `Message` is accessed via `resp.payload`:
+event-handler registration, `wait_for_response` returns the `HiveMessage` itself, not the
+inner `Message`. Code accesses the inner `Message` through `resp.payload`:
 
 ```python
 # hivemind_ma_player/__init__.py:322-323
@@ -173,22 +171,22 @@ raw = inner.data if hasattr(inner, "data") else {}
 ```
 
 The `hasattr` fallback handles the case where a future version of `hivemind-bus-client`
-returns the inner message directly, or where the response is somehow already unwrapped. This
+returns the inner message directly, or where the response is already unwrapped. This
 defensive pattern avoids a hard `AttributeError` across client versions.
 
 ### Why wait_for_response instead of emit + listen
 
-For polling, the plugin must send a request and then wait for a reply. The naive approach
-(emit the request, then register a listener for the reply) has a race condition: if OCP is fast,
-the reply arrives before the listener is registered and is silently dropped. `wait_for_response`
-registers the listener atomically before emitting the request, eliminating this race.
-`ovos-bus-client` and `hivemind-bus-client` both implement this guarantee.
+For polling, the plugin must send a request and then wait for a reply. The naive approach —
+emit the request, then register a listener for the reply — has a race condition: if OCP is
+fast, the reply arrives before the listener is registered and is silently dropped.
+`wait_for_response` registers the listener before it sends the request, which removes this
+race. `ovos-bus-client` and `hivemind-bus-client` both implement this guarantee.
 
 ---
 
 ## Threading model
 
-The threading model is identical to `ovos-ma-player` with one structural difference: the
+The threading model is identical to `ovos-ma-player`, with one structural difference: the
 connection call is `bus.connect(FakeBus())` rather than `bus.run_forever()`.
 
 ### FakeBus
@@ -199,7 +197,7 @@ connection. HiveMind uses it as the "local" side of the tunnel:
 - When HiveMind receives a tunnelled message from the remote, it emits it on the `FakeBus`.
 - Handlers registered with `bus.on()` are registered on this `FakeBus`.
 - When the plugin calls `bus.emit_mycroft(msg)`, HiveMind wraps `msg` and sends it to the
-  remote; it does NOT emit on the `FakeBus`.
+  remote. It does not emit on the `FakeBus`.
 
 The `FakeBus` is purely an internal routing mechanism. It is not visible to the plugin code
 beyond being passed to `bus.connect()`.
@@ -224,16 +222,16 @@ handle_async_init (asyncio loop)
 
 `hivemind_ma_player/__init__.py:368-390`
 
-The `connect_done.wait(15)` is wrapped in `asyncio.to_thread` to avoid blocking the event loop
-during the 15-second window. If `connect_error` is non-empty, or if `connect_done` was not set
-within 15 seconds, `ProviderUnavailableError` is raised.
+The code wraps `connect_done.wait(15)` in `asyncio.to_thread` to avoid blocking the event loop
+during the 15-second window. If `connect_error` is non-empty, or `connect_done` was not set
+within 15 seconds, it raises `ProviderUnavailableError`.
 
 ### Event callbacks
 
-Same rules as the local provider: `_on_player_state` and `_on_media_state` run in the
-HiveMind receive thread. They only mutate `_attr_*` attributes and call
-`player.update_state()`, which is thread-safe (it schedules on the event loop via
-`call_soon_threadsafe`). Never `await` inside these handlers.
+Same rules as the local provider: `_on_player_state` and `_on_media_state` run in the HiveMind
+receive thread. They only mutate `_attr_*` attributes and call `player.update_state()`, which
+is thread-safe (it schedules on the event loop with `call_soon_threadsafe`). Never `await`
+inside these handlers.
 
 ---
 
@@ -248,7 +246,7 @@ Identical to `ovos-ma-player`. See
 
 ### Messages sent by MA (MA to remote OVOS via HiveMind)
 
-All messages are standard OVOS `Message` objects sent via `bus.emit_mycroft()`:
+All messages are standard OVOS `Message` objects sent through `bus.emit_mycroft()`:
 
 | Message type | Payload | Triggered by | Source |
 |---|---|---|---|
@@ -281,17 +279,17 @@ For full payload schemas and enum values, see [ocp-protocol.md](ocp-protocol.md)
 ### PlayerState
 
 State parsing is identical to `ovos-ma-player`. The module-level `_parse_player_state`
-function (`hivemind_ma_player/__init__.py:147`) validates the payload using
+function (`hivemind_ma_player/__init__.py:147`) validates the payload with
 `OvosCommonPlayPlayerStateData` from `ovos_pydantic_models.skills.ocp` and maps
-`PlayerState.PLAYING` -> `PlaybackState.PLAYING`, `PlayerState.PAUSED` ->
-`PlaybackState.PAUSED`, and everything else -> `PlaybackState.IDLE`.
+`PlayerState.PLAYING` to `PlaybackState.PLAYING`, `PlayerState.PAUSED` to
+`PlaybackState.PAUSED`, and everything else to `PlaybackState.IDLE`.
 
 ### MediaState and end-of-track detection
 
 `_on_media_state` (`hivemind_ma_player/__init__.py:409`) calls `_parse_media_state_end`
-(`hivemind_ma_player/__init__.py:164`), which validates using `OvosCommonPlayMediaStateData`
-and returns `True` only for `OcpMediaState.END_OF_MEDIA` and `OcpMediaState.INVALID_MEDIA`.
-When `True`, the player is reset to IDLE and `current_media` is cleared.
+(`hivemind_ma_player/__init__.py:164`), which validates with `OvosCommonPlayMediaStateData` and
+returns `True` only for `OcpMediaState.END_OF_MEDIA` and `OcpMediaState.INVALID_MEDIA`. When
+this returns `True`, the player resets to IDLE and clears `current_media`.
 
 ---
 
@@ -306,11 +304,12 @@ for the full table.
 **Key point specific to HiveMind:** the `uri` field is the MA stream URL, resolved by
 `mass.streams.resolve_stream_url`. This URL must be reachable from the **remote OVOS device**,
 not just from the MA server. If OVOS is on a different subnet or behind NAT, configure MA's
-external/public URL in its network settings so that the resolved stream URL is accessible from
-the remote device.
+external/public URL in its network settings so the resolved stream URL is accessible from the
+remote device.
 
 **Note on payload structure:** `play_media` and `play_announcement` wrap the `MediaEntry` dict
-in a `OvosCommonPlayPlayData` payload via `_make_play_payload` (`hivemind_ma_player/__init__.py:137`):
+in an `OvosCommonPlayPlayData` payload through `_make_play_payload`
+(`hivemind_ma_player/__init__.py:137`):
 
 ```json
 {
@@ -328,15 +327,15 @@ HiveMind authentication operates at the WebSocket handshake level:
 
 - The access key is the first positional argument to `HiveMessageBusClient`
   (`hivemind_ma_player/__init__.py:365`). It is transmitted in the initial handshake message
-  sent immediately after the WebSocket connection is established.
+  sent right after the WebSocket connection is established.
 - The optional password adds a second factor. HiveMind uses it to derive an encryption key for
-  the message payload (in addition to TLS).
-- TLS (`ssl=True`, the default) encrypts the transport layer. The TLS certificate on the
-  HiveMind host should be trusted by the MA host's OS certificate store.
+  the message payload, in addition to TLS.
+- TLS (`ssl=True`, the default) encrypts the transport layer. The MA host's OS certificate
+  store should trust the TLS certificate on the HiveMind host.
 
 MA stores `access_key` and `password` as `ConfigEntryType.SECURE_STRING`
-(`hivemind_ma_player/__init__.py:88`, `:95`). MA encrypts these values at rest using its own
-key store. They are never written in plaintext to disk.
+(`hivemind_ma_player/__init__.py:88`, `:95`). MA encrypts these values at rest with its own key
+store. They are never written in plaintext to disk.
 
 ---
 
@@ -350,3 +349,6 @@ same reasons as `ovos-ma-player`. See
 `OVOSPlayer` (`hivemind_ma_player/__init__.py:219-227`):
 
 `PLAY_MEDIA`, `POWER`, `PAUSE`, `VOLUME_SET`, `VOLUME_MUTE`, `SEEK`, `PLAY_ANNOUNCEMENT`
+
+---
+[Home](../README.md) · [Plugin Authors Guide →](plugin-authors.md)
