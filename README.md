@@ -169,13 +169,34 @@ Copy the access key. If you want an added password layer, run:
 hivemind-core add-client --name "music-assistant" --password "mysecret"
 ```
 
-### 4. Verify the key
+### 4. Allow this provider's messages
+
+HiveMind denies every message type by default, so the new client cannot do anything until you
+allow the exact messages this provider sends. Use the Node ID printed by `add-client`:
+
+```bash
+hivemind-core allow-msg "ovos.common_play.play" <Node ID>
+hivemind-core allow-msg "ovos.common_play.pause" <Node ID>
+hivemind-core allow-msg "ovos.common_play.resume" <Node ID>
+hivemind-core allow-msg "ovos.common_play.stop" <Node ID>
+hivemind-core allow-msg "ovos.common_play.status" <Node ID>
+hivemind-core allow-msg "ovos.common_play.set_track_position" <Node ID>
+hivemind-core allow-msg "ovos.common_play.get_track_position" <Node ID>
+hivemind-core allow-msg "mycroft.volume.set" <Node ID>
+hivemind-core allow-msg "mycroft.volume.mute" <Node ID>
+hivemind-core allow-msg "mycroft.volume.unmute" <Node ID>
+```
+
+Skip the last three if you do not need volume control from MA. Without this step the client
+authenticates but every command is silently dropped by HiveMind's ACL.
+
+### 5. Verify the key
 
 ```bash
 hivemind-core list-clients
 ```
 
-### 5. Revoke access if needed
+### 6. Revoke access if needed
 
 ```bash
 hivemind-core delete-client --name "music-assistant"
@@ -364,6 +385,18 @@ hivemind-core listen --port 5678
 `docker-compose.yml` for a single-command deployment. The image installs `hivemind-core`, the
 agent plugin, `ovos-audio`, and audio system dependencies (vlc, mpv, PipeWire, ALSA). See the
 upstream repository for usage.
+
+Mount `$HOME/.config/hivemind` as a volume so the container keeps its identity across restarts:
+
+```yaml
+volumes:
+  - ${HOME}/.config/hivemind:/root/.config/hivemind
+```
+
+`hivemind-core` generates its node identity (and its keypair) the first time it starts. MA's
+provider config pins the access key from that identity. Without the volume, a recreated
+container generates a new identity on every restart, the pinned key on the MA side stops
+matching, and the provider flaps between connected and unavailable.
 
 ### Then configure MA
 
@@ -677,6 +710,23 @@ treats it as a new track and does not automatically resume the previous queue.
 
 Fix: This is a known limitation shared with `ovos-ma-player`. Fixing it needs OCP's native
 interrupt/duck/resume announcement handling, which uses a different message path.
+
+---
+
+**Playback commands are accepted but `ovos-media` never plays anything**
+
+Symptom: The connection is healthy, HiveMind forwards the messages, but the remote device
+(running `ovos-media` instead of the classic OCP audio service) never starts audio.
+
+Cause: HiveMind isolates each tunnelled, non-admin client into its own session, separate from
+the device's local default session. `ovos-media` only accepts a media source when the requesting
+session either has `media.validate_source` set to `false` or is an admin connection — this is by
+design, not a bug, since it stops an arbitrary tunnelled peer from hijacking device-local
+playback.
+
+Fix: Set `media.validate_source: false` for this player in the remote device's `ovos-media`
+configuration, or generate the access key with an admin-level client
+(`hivemind-core add-client --admin`).
 
 ---
 
