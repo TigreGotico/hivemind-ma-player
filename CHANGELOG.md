@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.1a3](https://github.com/TigreGotico/hivemind-ma-player/tree/0.1.1a3) (2026-09-02)
+
+[Full Changelog](https://github.com/TigreGotico/hivemind-ma-player/compare/0.1.1a2...0.1.1a3)
+
+**Merged pull requests:**
+
+- docs: add HOME environment requirement for Docker non-root users [\#7](https://github.com/TigreGotico/hivemind-ma-player/pull/7) ([JarbasAl](https://github.com/JarbasAl))
+
+## [0.1.1a2](https://github.com/TigreGotico/hivemind-ma-player/tree/0.1.1a2) (2026-09-02)
+
+[Full Changelog](https://github.com/TigreGotico/hivemind-ma-player/compare/0.1.1a1...0.1.1a2)
+
 ## [0.1.1a1](https://github.com/TigreGotico/hivemind-ma-player/tree/0.1.1a1) (2026-09-02)
 
 [Full Changelog](https://github.com/TigreGotico/hivemind-ma-player/compare/201757377f27a7eda9c077fd68dc237c2e72f447...0.1.1a1)
