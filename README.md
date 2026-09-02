@@ -127,6 +127,18 @@ RUN pip install hivemind-ma-player
 Rebuild and restart. Make sure the HiveMind port on each remote device is reachable from the
 Docker container (use the host LAN IP or a Docker network that has access to the LAN).
 
+When running the MA container as a non-root user, set a writable `HOME` environment variable to
+prevent connection failures:
+
+```yaml
+services:
+  music-assistant:
+    environment:
+      HOME: /data
+```
+
+Without this, the HiveMind client library cannot create its config directory and fails with "Permission denied: '/.config'".
+
 ---
 
 ## Setting up HiveMind on the remote device
