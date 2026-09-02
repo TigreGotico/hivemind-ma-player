@@ -82,33 +82,27 @@ PlaybackState = _PlaybackState
 # ---------------------------------------------------------------------------
 
 class TestParsePlayerState(unittest.TestCase):
+    """`ovos.common_play.player.state` carries the int PlayerState value."""
 
     def test_playing(self):
-        self.assertEqual(_parse_player_state({"state": "playing"}), PlaybackState.PLAYING)
+        self.assertEqual(_parse_player_state({"state": 1}), PlaybackState.PLAYING)
 
     def test_paused(self):
-        self.assertEqual(_parse_player_state({"state": "paused"}), PlaybackState.PAUSED)
+        self.assertEqual(_parse_player_state({"state": 2}), PlaybackState.PAUSED)
 
     def test_stopped(self):
-        self.assertEqual(_parse_player_state({"state": "stopped"}), PlaybackState.IDLE)
+        self.assertEqual(_parse_player_state({"state": 0}), PlaybackState.IDLE)
 
-    def test_loading_maps_to_idle(self):
-        self.assertEqual(_parse_player_state({"state": "loading"}), PlaybackState.IDLE)
+    def test_string_name_is_also_accepted(self):
+        self.assertEqual(_parse_player_state({"state": "playing"}), PlaybackState.PLAYING)
 
-    def test_buffering_maps_to_idle(self):
-        self.assertEqual(_parse_player_state({"state": "buffering"}), PlaybackState.IDLE)
+    def test_unknown_state_is_idle(self):
+        self.assertEqual(_parse_player_state({"state": "flying"}), PlaybackState.IDLE)
 
-    def test_unknown_string_returns_none(self):
-        self.assertIsNone(_parse_player_state({"state": "flying"}))
-
-    def test_missing_key_returns_none(self):
+    def test_missing_state_gives_none(self):
         self.assertIsNone(_parse_player_state({}))
 
-    def test_integer_state_returns_none(self):
-        # Old OVOS versions emitted IntEnum values; must not crash
-        self.assertIsNone(_parse_player_state({"state": 1}))
-
-    def test_none_state_returns_none(self):
+    def test_null_state_gives_none(self):
         self.assertIsNone(_parse_player_state({"state": None}))
 
 
@@ -146,51 +140,30 @@ class TestParseMediaStateEnd(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestParseStatusResponse(unittest.TestCase):
+    """The snapshot uses the int PlayerState vocabulary of ovos_utils.ocp."""
 
     def test_playing(self):
-        pb, elapsed = _parse_status_response({"state": "playing"})
-        self.assertEqual(pb, PlaybackState.PLAYING)
-        self.assertIsNone(elapsed)
+        self.assertEqual(_parse_status_response({"player_state": 1}), PlaybackState.PLAYING)
 
     def test_paused(self):
-        pb, elapsed = _parse_status_response({"state": "paused"})
-        self.assertEqual(pb, PlaybackState.PAUSED)
-        self.assertIsNone(elapsed)
+        self.assertEqual(_parse_status_response({"player_state": 2}), PlaybackState.PAUSED)
 
     def test_stopped(self):
-        pb, elapsed = _parse_status_response({"state": "stopped"})
-        self.assertEqual(pb, PlaybackState.IDLE)
+        self.assertEqual(_parse_status_response({"player_state": 0}), PlaybackState.IDLE)
 
-    def test_empty_gives_none_pb(self):
-        pb, elapsed = _parse_status_response({})
-        self.assertIsNone(pb)
-        self.assertIsNone(elapsed)
+    def test_full_daemon_snapshot(self):
+        snapshot = {
+            "playback_type": 2, "media_type": 2, "player_state": 1, "loop_state": 0,
+            "media_state": 3, "shuffle": False, "playlist_position": 0,
+            "playlist_size": 1, "title": "Track", "artist": "Artist", "image": "",
+        }
+        self.assertEqual(_parse_status_response(snapshot), PlaybackState.PLAYING)
 
-    def test_position_extracted_in_ms(self):
-        pb, elapsed = _parse_status_response({
-            "state": "playing",
-            "media": {"uri": "http://example.com/a.mp3", "position": 45000},
-        })
-        self.assertEqual(elapsed, 45000)
+    def test_empty_gives_none(self):
+        self.assertIsNone(_parse_status_response({}))
 
-    def test_no_position_field_gives_none_elapsed(self):
-        pb, elapsed = _parse_status_response({
-            "state": "playing",
-            "media": {"uri": "http://example.com/a.mp3"},
-        })
-        self.assertIsNone(elapsed)
-
-    def test_no_media_gives_none_elapsed(self):
-        pb, elapsed = _parse_status_response({"state": "playing"})
-        self.assertIsNone(elapsed)
-
-    def test_bad_state_gives_none_pb(self):
-        pb, elapsed = _parse_status_response({"state": "launching"})
-        self.assertIsNone(pb)
-
-    def test_integer_state_gives_none_pb(self):
-        pb, elapsed = _parse_status_response({"state": 2})
-        self.assertIsNone(pb)
+    def test_unparseable_payload_gives_none(self):
+        self.assertIsNone(_parse_status_response({"player_state": "not-a-state"}))
 
 
 # ---------------------------------------------------------------------------
@@ -236,11 +209,11 @@ class TestMakeOcpMediaEntry(unittest.TestCase):
 
     def test_playback_is_audio(self):
         entry = _make_ocp_media_entry("http://x.com/a.mp3", _fake_media())
-        self.assertEqual(entry["playback"], "audio")
+        self.assertEqual(entry["playback"], 2)
 
     def test_media_type_is_music(self):
         entry = _make_ocp_media_entry("http://x.com/a.mp3", _fake_media())
-        self.assertEqual(entry["media_type"], "music")
+        self.assertEqual(entry["media_type"], 2)
 
     def test_match_confidence_is_max(self):
         entry = _make_ocp_media_entry("http://x.com/a.mp3", _fake_media())
@@ -260,8 +233,8 @@ SAMPLE_ENTRY = {
     "uri": "http://example.com/stream.mp3",
     "title": "Track",
     "artist": "Artist",
-    "playback": "audio",
-    "media_type": "music",
+    "playback": 2,
+    "media_type": 2,
     "match_confidence": 1.0,
     "skill_id": "music_assistant",
     "length": 180_000,
@@ -305,30 +278,26 @@ class TestMakePlayPayload(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestPollPayloadUnwrap(unittest.TestCase):
-    """HiveMind poll uses wait_for_response which returns a HiveMessage.
+    """HiveMind poll uses wait_for_response, which returns a HiveMessage.
 
     The player unwraps it via:
         inner = resp.payload if hasattr(resp, "payload") else resp
         raw = inner.data if hasattr(inner, "data") else {}
 
-    These tests verify both the HiveMessage path (has .payload) and the
+    These tests cover both the HiveMessage path (has .payload) and the
     plain Message fallback (no .payload attribute).
     """
 
-    def _make_hivemessage(self, state: str, position: int | None = None):
-        """Return a mock that looks like a HiveMessage wrapping a BUS Message."""
+    def _make_hivemessage(self, data: dict):
         inner = MagicMock()
-        inner.data = {"state": state}
-        if position is not None:
-            inner.data["media"] = {"uri": "http://x.com/a.mp3", "position": position}
+        inner.data = data
         outer = MagicMock(spec=["payload"])
         outer.payload = inner
         return outer
 
-    def _make_plain_message(self, state: str):
-        """Return a mock that looks like a plain Message (no .payload)."""
+    def _make_plain_message(self, data: dict):
         msg = MagicMock(spec=["data"])
-        msg.data = {"state": state}
+        msg.data = data
         return msg
 
     def _unwrap(self, resp):
@@ -337,40 +306,29 @@ class TestPollPayloadUnwrap(unittest.TestCase):
         return inner.data if hasattr(inner, "data") else {}
 
     def test_hivemessage_playing(self):
-        resp = self._make_hivemessage("playing")
-        raw = self._unwrap(resp)
-        pb, _ = _parse_status_response(raw)
-        self.assertEqual(pb, PlaybackState.PLAYING)
+        raw = self._unwrap(self._make_hivemessage({"player_state": 1}))
+        self.assertEqual(_parse_status_response(raw), PlaybackState.PLAYING)
 
     def test_hivemessage_paused(self):
-        resp = self._make_hivemessage("paused")
-        raw = self._unwrap(resp)
-        pb, _ = _parse_status_response(raw)
-        self.assertEqual(pb, PlaybackState.PAUSED)
+        raw = self._unwrap(self._make_hivemessage({"player_state": 2}))
+        self.assertEqual(_parse_status_response(raw), PlaybackState.PAUSED)
 
     def test_hivemessage_stopped(self):
-        resp = self._make_hivemessage("stopped")
-        raw = self._unwrap(resp)
-        pb, _ = _parse_status_response(raw)
-        self.assertEqual(pb, PlaybackState.IDLE)
+        raw = self._unwrap(self._make_hivemessage({"player_state": 0}))
+        self.assertEqual(_parse_status_response(raw), PlaybackState.IDLE)
 
-    def test_hivemessage_position_extracted(self):
-        resp = self._make_hivemessage("playing", position=12000)
-        raw = self._unwrap(resp)
-        _, elapsed = _parse_status_response(raw)
-        self.assertEqual(elapsed, 12000)
+    def test_hivemessage_position_response(self):
+        """Position arrives on its own topic, not in the status snapshot."""
+        raw = self._unwrap(self._make_hivemessage({"position": 12000}))
+        self.assertEqual(raw["position"], 12000)
 
     def test_plain_message_fallback_playing(self):
-        resp = self._make_plain_message("playing")
-        raw = self._unwrap(resp)
-        pb, _ = _parse_status_response(raw)
-        self.assertEqual(pb, PlaybackState.PLAYING)
+        raw = self._unwrap(self._make_plain_message({"player_state": 1}))
+        self.assertEqual(_parse_status_response(raw), PlaybackState.PLAYING)
 
     def test_plain_message_fallback_paused(self):
-        resp = self._make_plain_message("paused")
-        raw = self._unwrap(resp)
-        pb, _ = _parse_status_response(raw)
-        self.assertEqual(pb, PlaybackState.PAUSED)
+        raw = self._unwrap(self._make_plain_message({"player_state": 2}))
+        self.assertEqual(_parse_status_response(raw), PlaybackState.PAUSED)
 
 
 if __name__ == "__main__":
