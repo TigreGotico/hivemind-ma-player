@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.1a5](https://github.com/TigreGotico/hivemind-ma-player/tree/0.1.1a5) (2026-09-03)
+
+[Full Changelog](https://github.com/TigreGotico/hivemind-ma-player/compare/0.1.1a4...0.1.1a5)
+
 ## [0.1.1a4](https://github.com/TigreGotico/hivemind-ma-player/tree/0.1.1a4) (2026-09-03)
 
 [Full Changelog](https://github.com/TigreGotico/hivemind-ma-player/compare/0.1.1a3...0.1.1a4)
