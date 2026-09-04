@@ -6,19 +6,19 @@ the OVOS provider is the transport: HiveMind wraps each Mycroft/OVOS message
 in an encrypted HiveMessage envelope and connects over an authenticated
 websocket (wss://<host>:<port>?authorization=<b64-key>).
 
-MA controls the remote OVOS instance; OCP state events tunnelled back through
-HiveMind are used to keep the MA player state in sync.
+Incoming messages are validated with ovos-pydantic-models before their
+fields are accessed, so schema changes in OVOS surface as logged warnings
+rather than silent AttributeErrors.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
-    ConfigEntryType,
     PlaybackState,
     PlayerFeature,
     ProviderFeature,
@@ -34,11 +34,14 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
+_LOGGER = logging.getLogger(__name__)
+
 SUPPORTED_FEATURES: set[ProviderFeature] = set()
 
 CONF_HOST = "host"
 CONF_PORT = "port"
 CONF_KEY = "access_key"
+CONF_PASSWORD = "password"
 CONF_SSL = "ssl"
 CONF_NAME = "player_name"
 
@@ -52,50 +55,102 @@ async def setup(
     return HiveMindPlayerProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    return (
-        ConfigEntry(
-            key=CONF_HOST,
-            type=ConfigEntryType.STRING,
-            label="HiveMind host",
-            required=True,
-            description="Hostname or IP of the HiveMind node (e.g. myrpi.local).",
-        ),
-        ConfigEntry(
-            key=CONF_PORT,
-            type=ConfigEntryType.INTEGER,
-            label="HiveMind port",
-            required=False,
-            default_value=DEFAULT_PORT,
-        ),
-        ConfigEntry(
-            key=CONF_KEY,
-            type=ConfigEntryType.SECURE_STRING,
-            label="Access key",
-            required=True,
-            description="The access key issued by HiveMind (hivemind-core add-client).",
-        ),
-        ConfigEntry(
-            key=CONF_SSL,
-            type=ConfigEntryType.BOOLEAN,
-            label="Use SSL (wss://)",
-            required=False,
-            default_value=DEFAULT_SSL,
-        ),
-        ConfigEntry(
-            key=CONF_NAME,
-            type=ConfigEntryType.STRING,
-            label="Player name",
-            required=False,
-            default_value="MA HiveMind Player",
-            description="Display name shown in the MA UI.",
-        ),
+# ---------------------------------------------------------------------------
+# Helpers (shared with ovos-ma-player, duplicated intentionally — no coupling)
+# ---------------------------------------------------------------------------
+
+def _make_ocp_media_entry(url: str, media: PlayerMedia) -> dict:
+    """Serialize a MA PlayerMedia to an OCP MediaEntry dict."""
+    from ovos_pydantic_models.skills.ocp import (  # noqa: PLC0415
+        MediaEntry,
     )
+    from ovos_utils.ocp import MediaType, PlaybackType  # noqa: PLC0415
+    duration_s = getattr(media, "duration", None) or 0
+    entry = MediaEntry(
+        uri=url,
+        title=getattr(media, "title", None) or url,
+        artist=getattr(media, "artist_name", None) or "",
+        length=int(duration_s * 1000),  # MA gives seconds; OCP expects ms
+        match_confidence=1.0,
+        skill_id="music_assistant",
+        image=getattr(media, "image_url", None) or "",
+    )
+    # the OCP wire vocabulary for these two fields is the int enums of
+    # ovos_utils.ocp; the same-named str enums in ovos_pydantic_models are a
+    # different vocabulary and OCP's roster does not recognise them.
+    payload = entry.model_dump()
+    payload["media_type"] = int(MediaType.MUSIC)
+    payload["playback"] = int(PlaybackType.AUDIO)
+    return payload
+
+
+def _make_play_payload(entry_dict: dict) -> dict:
+    """Build a valid ovos.common_play.play payload dict."""
+    from ovos_pydantic_models.skills.ocp import OvosCommonPlayPlayData  # noqa: PLC0415
+    return OvosCommonPlayPlayData(
+        media=entry_dict,
+        disambiguation=[],
+        playlist=[entry_dict],
+    ).model_dump()
+
+
+def _parse_player_state(raw: dict) -> PlaybackState | None:
+    """Read ovos.common_play.player.state data; return MA PlaybackState or None.
+
+    The payload is `{"state": <int PlayerState>}` — the int vocabulary of
+    `ovos_utils.ocp`, not the same-named str enum in ovos_pydantic_models,
+    so this reads the field directly rather than through a model.
+    """
+    state = raw.get("state")
+    if state is None:
+        _LOGGER.warning("ovos.common_play.player.state carried no state: %s", raw)
+        return None
+    return _playback_state(state)
+
+
+def _playback_state(state) -> PlaybackState:
+    """Map an OCP PlayerState (int wire value or str name) to MA's PlaybackState."""
+    from ovos_utils.ocp import PlayerState  # noqa: PLC0415
+    try:
+        state = PlayerState(int(state))
+    except (TypeError, ValueError):
+        state = str(state).lower()
+    if state in (PlayerState.PLAYING, "playing"):
+        return PlaybackState.PLAYING
+    if state in (PlayerState.PAUSED, "paused"):
+        return PlaybackState.PAUSED
+    return PlaybackState.IDLE  # STOPPED / LOADING / BUFFERING
+
+
+def _parse_media_state_end(raw: dict) -> bool:
+    """Return True if ovos.common_play.media.state signals end or error."""
+    from ovos_pydantic_models.audio.ocp import (  # noqa: PLC0415
+        OvosCommonPlayMediaStateData, OcpMediaState,
+    )
+    try:
+        data = OvosCommonPlayMediaStateData(**raw)
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.warning("Unexpected ovos.common_play.media.state payload: %s", exc)
+        return False
+    return data.state in (OcpMediaState.END_OF_MEDIA, OcpMediaState.INVALID_MEDIA)
+
+
+def _parse_status_response(raw: dict) -> PlaybackState | None:
+    """Validate ovos.common_play.status.response; return the MA playback state.
+
+    The status snapshot carries no playback position — elapsed time is read
+    separately from `ovos.common_play.get_track_position`.
+    """
+    from ovos_pydantic_models.skills.ocp import OvosCommonPlayStatusResponseData  # noqa: PLC0415
+    try:
+        data = OvosCommonPlayStatusResponseData(**raw)
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.warning("Unexpected ovos.common_play.status.response payload: %s", exc)
+        return None
+    if data.player_state is None:
+        _LOGGER.warning("ovos.common_play.status.response carried no player_state")
+        return None
+    return _playback_state(data.player_state)
 
 
 # ---------------------------------------------------------------------------
@@ -130,20 +185,10 @@ class HiveMindPlayer(Player):
     def poll_interval(self) -> int:
         return 5 if self._attr_playback_state == PlaybackState.PLAYING else 30
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
     def _emit(self, msg_type: str, data: dict | None = None) -> None:
         """Send a Mycroft/OVOS message through the HiveMind tunnel."""
         msg = self.provider.Message(msg_type, data or {})
-        # HiveMessageBusClient.emit_mycroft() wraps the Message in a
-        # HiveMessage and sends it through the encrypted websocket.
         self.provider.bus.emit_mycroft(msg)
-
-    # ------------------------------------------------------------------
-    # Playback commands — identical message types to the OVOS provider
-    # ------------------------------------------------------------------
 
     async def play(self) -> None:
         await asyncio.to_thread(self._emit, "ovos.common_play.resume")
@@ -162,8 +207,10 @@ class HiveMindPlayer(Player):
         self.update_state()
 
     async def seek(self, position: int) -> None:
+        # OCP set_track_position expects milliseconds
         await asyncio.to_thread(
-            self._emit, "ovos.common_play.set_track_position", {"position": float(position)}
+            self._emit, "ovos.common_play.set_track_position",
+            {"position": int(position * 1000)},
         )
 
     async def volume_set(self, volume_level: int) -> None:
@@ -188,12 +235,9 @@ class HiveMindPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
-        await asyncio.to_thread(self._emit, "ovos.common_play.play", {
-            "tracks": [{"uri": url,
-                        "title": getattr(media, "title", None) or url,
-                        "artist": getattr(media, "artist_name", None) or "",
-                        "image": getattr(media, "image_url", None) or ""}],
-        })
+        entry_dict = await asyncio.to_thread(_make_ocp_media_entry, url, media)
+        payload = await asyncio.to_thread(_make_play_payload, entry_dict)
+        await asyncio.to_thread(self._emit, "ovos.common_play.play", payload)
         self._attr_current_media = media
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
@@ -202,36 +246,45 @@ class HiveMindPlayer(Player):
         self, announcement: PlayerMedia, volume_level: int | None = None
     ) -> None:
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, announcement)
-        await asyncio.to_thread(self._emit, "ovos.common_play.play", {
-            "tracks": [{"uri": url,
-                        "title": getattr(announcement, "title", None) or "Announcement",
-                        "artist": "",
-                        "image": ""}],
-        })
+        entry_dict = await asyncio.to_thread(_make_ocp_media_entry, url, announcement)
+        payload = await asyncio.to_thread(_make_play_payload, entry_dict)
+        await asyncio.to_thread(self._emit, "ovos.common_play.play", payload)
 
     async def poll(self) -> None:
         """Ask OCP for current playback state via HiveMind."""
         def _ask():
-            return self.provider.bus.wait_for_mycroft(
-                "ovos.common_play.status.response", timeout=2.0
+            # wait_for_response sends the message and registers the listener
+            # atomically, avoiding the race where a response arrives before
+            # wait_for_mycroft starts listening.
+            return self.provider.bus.wait_for_response(
+                self.provider.Message("ovos.common_play.status"),
+                reply_type="ovos.common_play.status.response",
+                timeout=3.0,
             )
 
-        self._emit("ovos.common_play.status")
         resp = await asyncio.to_thread(_ask)
         if resp:
-            state = resp.data.get("state")
-            if state == "playing":
-                self._attr_playback_state = PlaybackState.PLAYING
-            elif state == "paused":
-                self._attr_playback_state = PlaybackState.PAUSED
-            else:
-                self._attr_playback_state = PlaybackState.IDLE
-            pos = resp.data.get("position")
-            if pos is not None:
-                self._attr_elapsed_time = int(pos)
-            volume = resp.data.get("volume")
-            if volume is not None:
-                self._attr_volume_level = int(volume * 100)
+            # wait_for_response with a MycroftMessage returns a HiveMessage;
+            # .payload on a HiveMessageType.BUS message reconstructs the inner Message.
+            inner = resp.payload if hasattr(resp, "payload") else resp
+            raw = inner.data if hasattr(inner, "data") else {}
+            pb_state = _parse_status_response(raw)
+            if pb_state is not None:
+                self._attr_playback_state = pb_state
+
+        def _ask_position():
+            return self.provider.bus.wait_for_response(
+                self.provider.Message("ovos.common_play.get_track_position"),
+                reply_type="ovos.common_play.get_track_position.response",
+                timeout=3.0,
+            )
+
+        pos = await asyncio.to_thread(_ask_position)
+        if pos:
+            inner = pos.payload if hasattr(pos, "payload") else pos
+            data = inner.data if hasattr(inner, "data") else {}
+            if data.get("position") is not None:
+                self._attr_elapsed_time = int(data["position"]) // 1000  # ms → s
         self.update_state()
 
     async def on_unload(self) -> None:
@@ -251,35 +304,36 @@ class HiveMindPlayerProvider(PlayerProvider):
         try:
             from ovos_bus_client import Message  # noqa: PLC0415
             from hivemind_bus_client import HiveMessageBusClient  # noqa: PLC0415
+            from ovos_utils.fakebus import FakeBus  # noqa: PLC0415
             self.Message = Message
             self._HiveMessageBusClient = HiveMessageBusClient
+            self._FakeBus = FakeBus
         except ImportError as err:
             from music_assistant_models.errors import ProviderUnavailableError
             raise ProviderUnavailableError(
                 "hivemind-bus-client or ovos-bus-client not installed") from err
 
-        host = self.config.get_value(CONF_HOST)
-        port = int(self.config.get_value(CONF_PORT) or DEFAULT_PORT)
-        key = self.config.get_value(CONF_KEY)
-        ssl = bool(self.config.get_value(CONF_SSL) if self.config.get_value(CONF_SSL) is not None
+        host = self.get_setup_value(CONF_HOST)
+        port = int(self.get_setup_value(CONF_PORT) or DEFAULT_PORT)
+        key = self.get_setup_value(CONF_KEY)
+        password = self.get_setup_value(CONF_PASSWORD) or ""
+        ssl = bool(self.get_setup_value(CONF_SSL) if self.get_setup_value(CONF_SSL) is not None
                    else DEFAULT_SSL)
 
-        url = self._HiveMessageBusClient.build_url(
-            key=key, host=host, port=port, ssl=ssl,
-            useragent="MusicAssistantHiveMindPlayer",
-        )
+        # the client takes the scheme in the host, not a separate ssl flag
+        if not host.startswith(("ws://", "wss://")):
+            host = f"{'wss' if ssl else 'ws'}://{host}"
+        self.bus = self._HiveMessageBusClient(key, host=host, port=port,
+                                              password=password)
 
-        self.bus = self._HiveMessageBusClient(host=url, key=key)
-
-        # connect() is synchronous — run it in a thread
         connect_done = threading.Event()
         connect_error: list[Exception] = []
 
         def _connect():
             try:
-                self.bus.connect()
+                self.bus.connect(self._FakeBus())
                 connect_done.set()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 connect_error.append(exc)
                 connect_done.set()
 
@@ -287,47 +341,67 @@ class HiveMindPlayerProvider(PlayerProvider):
         t.start()
         await asyncio.to_thread(connect_done.wait, 15)
 
+        # the client reconnects on its own forever, so a connection that never
+        # came up has to be torn down here or it keeps hammering the node with
+        # credentials MA has already reported as bad.
         if connect_error:
+            self._abandon_bus()
             from music_assistant_models.errors import ProviderUnavailableError
             raise ProviderUnavailableError(
                 f"HiveMind connection failed: {connect_error[0]}") from connect_error[0]
         if not connect_done.is_set():
+            self._abandon_bus()
             from music_assistant_models.errors import ProviderUnavailableError
             raise ProviderUnavailableError(
                 f"Timed out connecting to HiveMind at {host}:{port}")
 
         self.logger.info("Connected to HiveMind at %s:%s", host, port)
 
-        # Subscribe to OCP state events tunnelled back from the remote OVOS instance
-        self.bus.on("ovos.common_play.track.state", self._on_track_state)
+        # bus.on() with a non-HiveMessageType name routes via on_mycroft(),
+        # so handlers receive the inner Message (not HiveMessage wrapper).
+        self.bus.on("ovos.common_play.player.state", self._on_player_state)
         self.bus.on("ovos.common_play.media.state", self._on_media_state)
 
-    def _on_track_state(self, message) -> None:
-        state = message.data.get("state")
+    def _abandon_bus(self) -> None:
+        """Stop the client's reconnect loop after a failed connection."""
+        try:
+            self.bus.close()
+        except Exception:  # noqa: BLE001
+            self.logger.debug("HiveMind client did not close cleanly", exc_info=True)
+        self.bus = None
+
+    def _on_player_state(self, message) -> None:
+        pb_state = _parse_player_state(message.data)
+        if pb_state is None:
+            return
         for player in self.players:
-            if state == "playing":
-                player._attr_playback_state = PlaybackState.PLAYING
-            elif state == "paused":
-                player._attr_playback_state = PlaybackState.PAUSED
-            elif state in ("stopped", "end"):
-                player._attr_playback_state = PlaybackState.IDLE
+            player._attr_playback_state = pb_state
+            if pb_state == PlaybackState.IDLE:
                 player._attr_current_media = None
-            player.update_state()
+            self._publish(player)
 
     def _on_media_state(self, message) -> None:
-        state = message.data.get("state")
-        if state in ("end", "error"):
-            for player in self.players:
-                player._attr_playback_state = PlaybackState.IDLE
-                player._attr_current_media = None
-                player.update_state()
+        if not _parse_media_state_end(message.data):
+            return
+        for player in self.players:
+            player._attr_playback_state = PlaybackState.IDLE
+            player._attr_current_media = None
+            self._publish(player)
+
+    def _publish(self, player) -> None:
+        """Push a player update from a bus-client thread.
+
+        Bus callbacks run on the messagebus client's own thread; MA rejects
+        ``update_state`` from anywhere but its event loop.
+        """
+        self.mass.loop.call_soon_threadsafe(player.update_state)
 
     async def discover_players(self) -> None:
         player_id = f"{self.instance_id}:hivemind"
-        name = self.config.get_value(CONF_NAME) or "MA HiveMind Player"
+        name = self.get_setup_value(CONF_NAME) or "MA HiveMind Player"
         player = HiveMindPlayer(self, player_id, name=name)
         await self.mass.players.register(player)
 
-    async def unload(self) -> None:
-        if hasattr(self, "bus"):
+    async def unload(self, is_removed: bool = False) -> None:
+        if getattr(self, "bus", None):
             self.bus.close()
